@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spygram"
+version = "1.1.0"
+description = "Sophisticated Instagram scraper for educational and personal use"
+requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0",
+    "httpx[http2]>=0.27",
+    "Pillow>=10.0",
+    "rookiepy>=0.5",
+]
+
+[project.scripts]
+spygram = "spygram.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
