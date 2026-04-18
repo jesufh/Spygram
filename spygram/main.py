@@ -165,7 +165,7 @@ async def run() -> None:
             elif ctype == "highlights":
                 results["highlights"] = await scrape_highlights(client, target, user_id)
             elif ctype == "tagged":
-                results["tagged"] = await scrape_tagged(client, target, user_id)
+                results["tagged"] = await scrape_tagged(client, target, user_id, limit=args.limit)
             elif ctype == "saved":
                 results["saved"] = await scrape_saved(client, target, limit=args.limit or 50)
         except httpx.HTTPStatusError as e:

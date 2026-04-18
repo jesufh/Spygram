@@ -243,3 +243,38 @@ class SpygramWebClient:
             console.print(f"  [red]Error fetching saved items:[/] {e}")
 
         return medias[:amount] if amount > 0 else medias
+
+    async def get_tagged_medias(self, user_id: str, amount: int = 0) -> list[dict]:
+        """Get tagged posts for a user via the usertags endpoint with pagination."""
+        medias: list[dict] = []
+        max_id = ""
+
+        console.print(f"  [dim]Fetching tagged posts (limit: {amount if amount > 0 else 'all'})...[/]")
+
+        while True:
+            if amount > 0 and len(medias) >= amount:
+                break
+
+            url = f"https://www.instagram.com/api/v1/usertags/{user_id}/feed/"
+            if max_id:
+                url += f"?max_id={max_id}"
+
+            try:
+                data = await self._request("GET", url)
+                items = data.get("items",[])
+                medias.extend(items)
+
+                if not data.get("more_available", False):
+                    break
+
+                max_id = data.get("next_max_id", "")
+                if not items or not max_id:
+                    break
+
+                console.print(f"  [dim]  {len(medias)} tagged posts...[/]")
+
+            except Exception as e:
+                console.print(f"  [red]Error paginating tagged posts:[/] {e}")
+                break
+
+        return medias[:amount] if amount > 0 else medias
