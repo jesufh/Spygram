@@ -10,7 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCo
 
 from spygram.client import SpygramWebClient
 from spygram.config import get_content_dir, random_delay
-from spygram.utils import save_metadata
+from spygram.utils import save_metadata, _make_serializable
 
 console = Console(force_terminal=True)
 
@@ -19,6 +19,7 @@ async def scrape_stories(
     client: SpygramWebClient,
     username: str,
     user_id: str,
+    user_only: bool = False,
 ) -> dict:
     """Scrape active stories with a flat output and single index."""
     console.print(f"\n  [bold cyan]Fetching stories for @{username}...[/]")
@@ -44,6 +45,10 @@ async def scrape_stories(
         task = progress.add_task("Downloading stories", total=len(items))
 
         for item in items:
+            if user_only:
+                if item.get("story_feed_media") or item.get("reshared_story"):
+                    continue
+
             try:
                 pk = item.get("pk")
                 media_type = item.get("media_type")

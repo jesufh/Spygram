@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--limit", "-l", type=int, default=0, help="Maximum items (0 = all)")
     parser.add_argument("--version", "-v", action="version", version=f"spygram {__version__}")
+    parser.add_argument("--user-only", action="store_true", help="Download only original stories from the user")
 
     return parser.parse_args()
 
@@ -159,7 +160,7 @@ async def run() -> None:
             elif ctype == "posts":
                 results["posts"] = await scrape_posts(client, target, user_id, limit=args.limit)
             elif ctype == "stories":
-                results["stories"] = await scrape_stories(client, target, user_id)
+                results["stories"] = await scrape_stories(client, target, user_id, user_only=args.user_only)
             elif ctype == "reels":
                 results["reels"] = await scrape_reels(client, target, user_id, limit=args.limit)
             elif ctype == "highlights":
