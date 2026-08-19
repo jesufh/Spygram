@@ -4,18 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spygram"
-version = "1.1.0"
-description = "Sophisticated Instagram scraper for educational and personal use"
+version = "2.0.0"
+description = "Download instagram content fasty"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "rich>=13.0",
-    "httpx[http2]>=0.27",
-    "Pillow>=10.0",
-    "rookiepy>=0.5",
+    "rich>=13.0.0",
+    "curl-cffi>=0.7.0",
+    "platformdirs>=4.0.0",
+    "rookiepy>=0.5.0",
 ]
 
 [project.scripts]
-spygram = "spygram.main:main"
+spygram = "spygram.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

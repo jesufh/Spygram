@@ -1,213 +1,203 @@
-"""Authentication helpers for the web client."""
+"""
+spygram.auth
+~~~~~~~~~~~~
+
+Authentication and session persistence helpers.
+
+Provides clean functions to save and load Instagram session credentials
+from JSON files and extract live cookies from installed desktop browsers
+without direct terminal or UI coupling.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 from pathlib import Path
-from typing import Optional
-import http.cookiejar
+from typing import Any
 
-from rich.console import Console
-from rich.prompt import Prompt
+from spygram.config import get_default_config_dir
+from spygram.exceptions import InvalidSessionError
 
-from spygram.config import ensure_sessions_dir
+logger = logging.getLogger("spygram.auth")
 
-console = Console()
-
-SESSION_FILE_TEMPLATE = "{username}_web_session.json"
-
-REQUIRED_COOKIES = ["sessionid", "csrftoken", "ds_user_id"]
-BROWSER_ORDER = ["chrome", "edge", "firefox", "brave", "opera"]
+REQUIRED_COOKIES = ("sessionid",)
+SUPPORTED_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "chromium", "vivaldi", "safari")
 
 
-def _session_path(username: str) -> Path:
-    """Return the session file path for a username."""
-    return ensure_sessions_dir() / SESSION_FILE_TEMPLATE.format(username=username)
+def get_sessions_dir(base_config_dir: Path | None = None) -> Path:
+    """
+    Resolve the directory where session JSON files are stored.
+
+    :param base_config_dir: Optional custom config directory.
+    :type base_config_dir: Path | None
+    :return: Sessions directory path.
+    :rtype: Path
+    """
+    base = base_config_dir or get_default_config_dir()
+    sessions_path = base / "sessions"
+    sessions_path.mkdir(parents=True, exist_ok=True)
+    return sessions_path
 
 
-def _dict_to_cookiejar(cookie_dict: dict[str, str]) -> http.cookiejar.CookieJar:
-    """Convert a plain cookie dictionary to a CookieJar."""
-    cj = http.cookiejar.CookieJar()
-    for name, value in cookie_dict.items():
-        cookie = http.cookiejar.Cookie(
-            version=0, name=name, value=str(value),
-            port=None, port_specified=False,
-            domain='.instagram.com', domain_specified=True, domain_initial_dot=True,
-            path='/', path_specified=True,
-            secure=True, expires=None, discard=True,
-            comment=None, comment_url=None,
-            rest={'HttpOnly': None}, rfc2109=False,
-        )
-        cj.set_cookie(cookie)
-    return cj
+def get_session_file_path(username: str, sessions_dir: Path | None = None) -> Path:
+    """
+    Get the full file path for a specific user's session file.
+
+    :param username: Target account username.
+    :type username: str
+    :param sessions_dir: Optional custom sessions directory.
+    :type sessions_dir: Path | None
+    :return: Path to the JSON session file.
+    :rtype: Path
+    """
+    clean_username = username.lower().strip("@")
+    target_dir = sessions_dir or get_sessions_dir()
+    return target_dir / f"{clean_username}_session.json"
 
 
-def _validate_cookies(cookie_dict: dict[str, str]) -> tuple[bool, list[str]]:
-    """Validate required cookies and return missing keys."""
-    missing = []
-    for key in REQUIRED_COOKIES:
-        val = cookie_dict.get(key)
-        if not val or not str(val).strip():
-            missing.append(key)
-    return len(missing) == 0, missing
+def save_session(cookies: dict[str, str], username: str, sessions_dir: Path | None = None) -> Path:
+    """
+    Persist Instagram session cookies to a local JSON file with restricted permissions.
+
+    :param cookies: Mapping of cookie names to string values.
+    :type cookies: dict[str, str]
+    :param username: Associated account username.
+    :type username: str
+    :param sessions_dir: Optional custom sessions directory.
+    :type sessions_dir: Path | None
+    :return: Path where the session file was written.
+    :rtype: Path
+    :raises InvalidSessionError: If required session cookies are missing.
+    """
+    if not any(cookies.get(k) for k in REQUIRED_COOKIES):
+        raise InvalidSessionError(f"Cannot save session: missing required cookies ({REQUIRED_COOKIES})")
+
+    file_path = get_session_file_path(username, sessions_dir)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+
+    if os.name == "posix":
+        try:
+            os.chmod(file_path, 0o600)
+        except OSError as e:
+            logger.debug("Could not set 0600 permissions on %s: %s", file_path, e)
+
+    logger.debug("Saved session for user '%s' at %s", username, file_path)
+    return file_path
 
 
-def save_session(cookies: http.cookiejar.CookieJar, username: str) -> None:
-    """Save cookies to a JSON file."""
-    path = _session_path(username)
-    cookie_dict = {cookie.name: cookie.value for cookie in cookies}
-    path.write_text(json.dumps(cookie_dict, indent=2), encoding="utf-8")
-    console.print(f"  [dim]Web session saved to[/] [cyan]{path.name}[/]")
+def load_session(username: str, sessions_dir: Path | None = None) -> dict[str, str] | None:
+    """
+    Load and validate a saved session JSON file for a given username.
 
-
-def load_session(username: str) -> Optional[http.cookiejar.CookieJar]:
-    """Load cookies from a JSON file and validate completeness."""
-    path = _session_path(username)
-    if not path.exists():
+    :param username: Account username.
+    :type username: str
+    :param sessions_dir: Optional custom sessions directory.
+    :type sessions_dir: Path | None
+    :return: Cookie mapping if valid, None if not found or invalid.
+    :rtype: dict[str, str] | None
+    """
+    file_path = get_session_file_path(username, sessions_dir)
+    if not file_path.is_file():
+        logger.debug("Session file not found at %s", file_path)
         return None
 
     try:
-        cookie_dict = json.loads(path.read_text(encoding="utf-8"))
-        valid, missing = _validate_cookies(cookie_dict)
-        if not valid:
-            console.print(
-                f"  [yellow]Warning: incomplete session (missing: {', '.join(missing)}). "
-                f"Delete the session and sign in again.[/]"
-            )
+        data: Any = json.loads(file_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            logger.warning("Session file %s does not contain a JSON dictionary", file_path)
             return None
-
-        cj = _dict_to_cookiejar(cookie_dict)
-        console.print(f"  [green]OK[/] Web session for {username} loaded")
-        return cj
-    except Exception:
+        cookie_dict = {str(k): str(v) for k, v in data.items()}
+        if not all(cookie_dict.get(k) for k in REQUIRED_COOKIES):
+            logger.warning("Session file %s missing required cookie 'sessionid'", file_path)
+            return None
+        return cookie_dict
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to parse session file %s: %s", file_path, e)
         return None
 
 
-def clear_session(username: str) -> None:
-    """Delete the saved session file."""
-    path = _session_path(username)
-    path.unlink(missing_ok=True)
-    console.print(f"  [green]OK[/] Session removed for [cyan]{username}[/]")
+def list_saved_sessions(sessions_dir: Path | None = None) -> list[str]:
+    """
+    List all available saved session usernames.
+
+    :param sessions_dir: Optional custom sessions directory.
+    :type sessions_dir: Path | None
+    :return: Sorted list of usernames with stored session files.
+    :rtype: list[str]
+    """
+    target_dir = sessions_dir or get_sessions_dir()
+    if not target_dir.is_dir():
+        return []
+
+    usernames: list[str] = []
+    for path in target_dir.glob("*_session.json"):
+        if path.is_file():
+            uname = path.name.replace("_session.json", "")
+            if uname:
+                usernames.append(uname)
+    return sorted(usernames)
 
 
-def get_latest_session() -> Optional[str]:
-    """Return the username of the most recently modified session file."""
-    sessions_dir = ensure_sessions_dir()
-    session_files = list(sessions_dir.glob("*_web_session.json"))
-    if not session_files:
-        return None
+def extract_user_id_from_session(cookies: dict[str, str]) -> str | None:
+    """
+    Extract the account user ID from the ``sessionid`` or ``ds_user_id`` cookie.
 
-    latest = max(session_files, key=lambda p: p.stat().st_mtime)
-    return latest.name.replace("_web_session.json", "")
+    :param cookies: Mapping of cookie names to values.
+    :type cookies: dict[str, str]
+    :return: Extracted numeric user ID string, or None if unavailable.
+    :rtype: str | None
+    """
+    if ds_user_id := cookies.get("ds_user_id"):
+        return ds_user_id.strip()
 
+    if sessionid := cookies.get("sessionid"):
+        if "%3A" in sessionid:
+            return sessionid.split("%3A")[0].strip()
+        if ":" in sessionid:
+            return sessionid.split(":")[0].strip()
 
-def login_with_saved_session(username: Optional[str] = None) -> Optional[tuple[str, http.cookiejar.CookieJar]]:
-    """Load a saved session or prompt the user to choose one."""
-    if username:
-        cj = load_session(username)
-        if cj:
-            return username, cj
-        return None
-
-    sessions_dir = ensure_sessions_dir()
-    session_files = list(sessions_dir.glob("*_web_session.json"))
-
-    if not session_files:
-        console.print("  [yellow]No saved sessions found[/]")
-        return None
-
-    console.print("\n  [bold]Available sessions:[/]")
-    usernames = []
-    for i, sf in enumerate(session_files, 1):
-        uname = sf.name.replace("_web_session.json", "")
-        usernames.append(uname)
-        console.print(f"    [cyan]{i}.[/] {uname}")
-
-    choice = Prompt.ask(
-        "\n  [bold]Select a session (number)[/]",
-        choices=[str(i) for i in range(1, len(usernames) + 1)],
-    )
-    username = usernames[int(choice) - 1]
-
-    cj = load_session(username)
-    if cj:
-        return username, cj
     return None
 
 
-def login_with_browser_cookies() -> Optional[http.cookiejar.CookieJar]:
-    """Extract Instagram cookies from installed browsers using rookiepy."""
+def extract_browser_cookies(browser_name: str | None = None) -> dict[str, str] | None:
+    """
+    Extract Instagram authentication cookies from installed desktop web browsers.
+
+    Uses :mod:`rookiepy` to decrypt browser cookie stores safely.
+
+    :param browser_name: Name of a specific browser, or None to scan all supported browsers.
+    :type browser_name: str | None
+    :return: Extracted valid cookie dictionary, or None if not found.
+    :rtype: dict[str, str] | None
+    """
     try:
         import rookiepy
     except ImportError:
-        console.print(
-            "  [red]Error: rookiepy is not installed.[/] Run: pip install rookiepy"
-        )
+        logger.debug("rookiepy library not installed; browser cookie extraction unavailable")
         return None
 
-    browser_fns = {
-        "chrome": rookiepy.chrome,
-        "edge": rookiepy.edge,
-        "firefox": rookiepy.firefox,
-        "brave": rookiepy.brave,
-        "opera": rookiepy.opera,
-    }
+    targets = [browser_name.lower()] if browser_name else list(SUPPORTED_BROWSERS)
 
-    console.print("\n  [dim]Searching for Instagram cookies in browsers...[/]")
-
-    for browser_name in BROWSER_ORDER:
-        cookie_fn = browser_fns.get(browser_name)
-        if not cookie_fn:
+    for browser in targets:
+        if not hasattr(rookiepy, browser):
             continue
-
         try:
-            raw_cookies = cookie_fn(domains=[".instagram.com"])
-
-            cookie_dict = {c["name"]: c["value"] for c in raw_cookies if "name" in c and "value" in c}
-
-            valid, missing = _validate_cookies(cookie_dict)
-            if valid:
-                console.print(f"  [green]OK[/] Valid cookies found in {browser_name.title()}")
-                console.print(f"  [dim]  Extracted cookies: {', '.join(cookie_dict.keys())}[/]")
-                return _dict_to_cookiejar(cookie_dict)
-            else:
-                console.print(
-                    f"  [yellow]Warning: {browser_name.title()} cookies are incomplete "
-                    f"(missing: {', '.join(missing)})[/]"
-                )
+            extractor = getattr(rookiepy, browser)
+            raw_cookies = extractor(domains=[".instagram.com"])
+            cookie_dict = {
+                c["name"]: c["value"]
+                for c in raw_cookies
+                if isinstance(c, dict) and "name" in c and "value" in c
+            }
+            if all(cookie_dict.get(k) for k in REQUIRED_COOKIES):
+                logger.debug("Successfully extracted Instagram session cookies from browser '%s'", browser)
+                return cookie_dict
         except Exception as e:
-            console.print(f"  [dim]  {browser_name.title()}: unavailable ({e})[/]")
+            logger.debug("Cookie extraction from browser '%s' failed: %s", browser, e)
             continue
 
-    console.print("  [red]Error: no valid Instagram cookies were found in any browser[/]")
-    console.print("  [dim]  Make sure you are signed in to Instagram in your browser[/]")
+    logger.debug("No active Instagram session cookies extracted from browsers: %s", targets)
     return None
-
-
-def login_with_session_id() -> Optional[http.cookiejar.CookieJar]:
-    """Manually enter session cookies and construct a CookieJar."""
-    console.print("\n  [bold]Enter your Instagram cookies:[/]")
-    console.print("  [dim]You can find them in DevTools -> Application -> Cookies -> instagram.com[/]\n")
-
-    session_id = Prompt.ask("  [bold]sessionid[/] [red](required)[/]").strip()
-    if not session_id:
-        console.print("  [red]Error: sessionid is required[/]")
-        return None
-
-    csrf_token = Prompt.ask("  [bold]csrftoken[/] [dim](recommended, press Enter to skip)[/]", default="").strip()
-    ds_user_id = Prompt.ask("  [bold]ds_user_id[/] [dim](recommended, press Enter to skip)[/]", default="").strip()
-
-    cookie_dict = {"sessionid": session_id}
-    if csrf_token:
-        cookie_dict["csrftoken"] = csrf_token
-    if ds_user_id:
-        cookie_dict["ds_user_id"] = ds_user_id
-
-    valid, missing = _validate_cookies(cookie_dict)
-    if not valid:
-        console.print(
-            f"  [yellow]Warning: recommended cookies are missing: {', '.join(missing)}. "
-            f"Some features may fail.[/]"
-        )
-
-    return _dict_to_cookiejar(cookie_dict)

@@ -1,5 +1,14 @@
-"""Allow running as `python -m spygram`."""
+"""
+spygram.__main__
+~~~~~~~~~~~~~~~~
 
-from spygram.main import main
+Executable entrypoint wrapper for the Spygram CLI application.
+Allows running the package directly via ``python -m spygram``.
+"""
 
-main()
+from __future__ import annotations
+
+from spygram.cli import main
+
+if __name__ == "__main__":
+    main()
