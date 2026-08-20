@@ -37,7 +37,7 @@ def slugify(text: str) -> str:
     return _SLUG_SPACES_RE.sub("_", cleaned).strip("_") or "unnamed"
 
 
-def extract_hd_profile_pic_url(data: dict[str, Any]) -> str:
+def extract_hd_profile_pic_url(data: dict[str, Any], allow_standard_fallback: bool = True) -> str:
     """
     Extract the highest resolution profile picture URL from a user or media dictionary.
 
@@ -46,6 +46,8 @@ def extract_hd_profile_pic_url(data: dict[str, Any]) -> str:
 
     :param data: JSON payload containing user or owner data.
     :type data: dict[str, Any]
+    :param allow_standard_fallback: If True, falls back to standard profile_pic_url if HD not found.
+    :type allow_standard_fallback: bool
     :return: High-resolution image URL, or empty string if not found.
     :rtype: str
     """
@@ -53,9 +55,7 @@ def extract_hd_profile_pic_url(data: dict[str, Any]) -> str:
         return ""
 
     user = data.get("user") if isinstance(data.get("user"), dict) else (
-        data.get("owner") if isinstance(data.get("owner"), dict) else (
-            data if any(k in data for k in ("username", "pk", "id", "full_name")) else {}
-        )
+        data.get("owner") if isinstance(data.get("owner"), dict) else data
     )
     if not isinstance(user, dict) or not user:
         return ""
@@ -74,7 +74,13 @@ def extract_hd_profile_pic_url(data: dict[str, Any]) -> str:
         if sorted_versions:
             return str(sorted_versions[0]["url"])
 
-    return str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or "")
+    if user.get("profile_pic_url_hd"):
+        return str(user["profile_pic_url_hd"])
+
+    if allow_standard_fallback:
+        return str(user.get("profile_pic_url") or "")
+
+    return ""
 
 
 @dataclass(slots=True, frozen=True)

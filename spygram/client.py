@@ -594,40 +594,59 @@ class InstagramClient:
         """
         clean_user = username.lower().strip("@") if username else ""
 
-        feed_url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=1"
-        try:
-            data = await self._request("GET", feed_url)
-            feed_user = data.get("user")
-            if isinstance(feed_user, dict):
-                pic = extract_hd_profile_pic_url(feed_user)
-                if pic:
-                    return pic
-
-            items = data.get("items", [])
-            if items and isinstance(items[0], dict):
-                item_user = items[0].get("user") or items[0].get("owner")
-                if isinstance(item_user, dict):
-                    item_uid = str(item_user.get("pk") or item_user.get("id") or "")
-                    item_uname = str(item_user.get("username", "")).lower()
-                    if item_uid == str(user_id) or (clean_user and item_uname == clean_user):
-                        pic = extract_hd_profile_pic_url(item_user)
-                        if pic:
-                            return pic
-        except Exception as e:
-            logger.debug("HD avatar feed extraction failed for user_id '%s': %s", user_id, e)
-
-        if clean_user:
-            mobile_url = f"https://www.instagram.com/api/v1/feed/user/{clean_user}/username/?count=1"
+        # 1. Try authenticated user info endpoint (contains 1080x1080 hd_profile_pic_url_info)
+        if user_id:
             try:
-                data = await self._request("GET", mobile_url)
-                feed_user = data.get("user")
-                if isinstance(feed_user, dict):
-                    pic = extract_hd_profile_pic_url(feed_user)
+                info_url = f"https://www.instagram.com/api/v1/users/{user_id}/info/"
+                data = await self._request("GET", info_url)
+                info_user = data.get("user")
+                if isinstance(info_user, dict):
+                    pic = extract_hd_profile_pic_url(info_user, allow_standard_fallback=False)
                     if pic:
                         return pic
             except Exception as e:
-                logger.debug("HD avatar mobile lookup failed for '%s': %s", clean_user, e)
+                logger.debug("HD avatar user info lookup failed for user_id '%s': %s", user_id, e)
 
+        # 2. Try web profile endpoint (contains profile_pic_url_hd 320x320 - 1080x1080)
+        if clean_user:
+            try:
+                web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={clean_user}"
+                data = await self._request("GET", web_url)
+                web_user = (data.get("data") or {}).get("user", {})
+                if isinstance(web_user, dict):
+                    pic = extract_hd_profile_pic_url(web_user, allow_standard_fallback=False)
+                    if pic:
+                        return pic
+            except Exception as e:
+                logger.debug("HD avatar web profile lookup failed for '%s': %s", clean_user, e)
+
+        # 3. Try feed endpoints (post items contain hd_profile_pic_versions 640x640 - 1080x1080)
+        feed_endpoints = []
+        if user_id:
+            feed_endpoints.append(f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=1")
+        if clean_user:
+            feed_endpoints.append(f"https://www.instagram.com/api/v1/feed/user/{clean_user}/username/?count=1")
+
+        for feed_url in feed_endpoints:
+            try:
+                data = await self._request("GET", feed_url)
+                items = data.get("items", [])
+                if items and isinstance(items[0], dict):
+                    item_user = items[0].get("user") or items[0].get("owner")
+                    if isinstance(item_user, dict):
+                        pic = extract_hd_profile_pic_url(item_user, allow_standard_fallback=False)
+                        if pic:
+                            return pic
+
+                feed_user = data.get("user")
+                if isinstance(feed_user, dict):
+                    pic = extract_hd_profile_pic_url(feed_user, allow_standard_fallback=False)
+                    if pic:
+                        return pic
+            except Exception as e:
+                logger.debug("HD avatar feed extraction failed for URL '%s': %s", feed_url, e)
+
+        # 4. Fallback to basic profile picture (standard resolution)
         if clean_user:
             try:
                 profile = await self.get_profile(clean_user)
