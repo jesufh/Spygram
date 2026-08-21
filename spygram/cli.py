@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reels", action="store_true", help="scrape reels")
     parser.add_argument("--highlights", action="store_true", help="scrape highlights")
     parser.add_argument("--tagged", action="store_true", help="scrape tagged posts")
-    parser.add_argument("--limit", "-l", type=int, default=0, help="limit number of items to download")
+    parser.add_argument("--limit", "-l", type=int, default=0, help="limit number of items to download (0 = unlimited)")
     parser.add_argument("--since", type=str, default=None, help="download only media posted after ISO date (YYYY-MM-DD)")
     parser.add_argument("--proxy", "-p", type=str, default=None, help="proxy URL (e.g. http://127.0.0.1:8080)")
     parser.add_argument("--output-dir", "-o", type=Path, default=None, help="custom base download directory")
@@ -193,7 +193,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", "-d", action="store_true", help="enable detailed debug traces and exception stack traces")
     parser.add_argument("--log-file", type=Path, default=None, help="write structured debug logs to specified file")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.limit < 0:
+        parser.error("--limit must be >= 0 (0 means unlimited)")
+    if args.max_concurrent < 1:
+        parser.error("--max-concurrent must be >= 1")
+    return args
 
 
 def select_session_interactive(config: AppConfig) -> tuple[str, dict[str, str]] | None:
@@ -290,6 +295,13 @@ async def run_scraper_category(
             progress.update(task_id, total=100, completed=0, info=f"no {ctype} found")
             return
 
+        # Respect the user's --limit even when a single page yields more
+        # items than requested (the iterator only stops *fetching*, it may
+        # still hand back a full page).
+        if limit > 0:
+            items = items[:limit]
+            item_pairs = item_pairs[:limit]
+
         progress.update(task_id, total=len(item_pairs), completed=0)
 
         def _on_event(event: DownloadEvent) -> None:
@@ -339,6 +351,9 @@ async def run() -> None:
         except ValueError:
             console.print(f"error: invalid date format '{args.since}', expected YYYY-MM-DD", style="grey70")
             return
+
+        if since_dt > datetime.now(timezone.utc):
+            console.print(f"warning: --since '{args.since}' is in the future; no media will be downloaded.", style="yellow")
 
     cache = Cache(config.cache_db_path)
     if args.clear_cache:

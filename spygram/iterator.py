@@ -52,6 +52,9 @@ class AsyncNodeIterator(Generic[T]):
         self._buffer: list[T] = []
         self._has_more = True
         self._exhausted = False
+        # Cursor the current buffered page was fetched with, so a limit cut
+        # mid-page can rewind and re-fetch that page on resume.
+        self._page_fetch_cursor: str | None = self._cursor
 
     @property
     def state(self) -> PaginationState:
@@ -94,6 +97,7 @@ class AsyncNodeIterator(Generic[T]):
                 raise StopAsyncIteration
 
             logger.debug("Fetching page index %d (cursor: %s)", self._page_index, self._cursor)
+            self._page_fetch_cursor = self._cursor
             page = await self._fetch_page(self._cursor)
             self._page_index += 1
             self._cursor = page.next_cursor
@@ -113,6 +117,12 @@ class AsyncNodeIterator(Generic[T]):
                         logger.debug("Item date %s is older than cutoff %s. Stopping pagination.", item_dt, self._since)
                         self._exhausted = True
                         break
+                if 0 < self._limit <= self._total_yielded + len(self._buffer):
+                    # Limit reached mid-page: rewind the saved cursor to the
+                    # one this page was fetched with so a resumed iterator
+                    # re-fetches the full page instead of skipping its tail.
+                    self._cursor = self._page_fetch_cursor
+                    break
                 self._buffer.append(item)
 
         if not self._buffer:

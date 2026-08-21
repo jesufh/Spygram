@@ -88,6 +88,7 @@ class Downloader:
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self.timeout = timeout
         self._session: AsyncSession | None = None
+        self._stats_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Downloader:
         self._ensure_session()
@@ -250,7 +251,9 @@ class Downloader:
             return DownloadStatus.SKIPPED, 0
 
         target_file = user_dir / "profile_pic.jpg"
-        return await self.download_file(url, target_file, force=True)
+        # Cache-aware: only redownload when the file is missing or changed,
+        # instead of forcing a fresh copy on every single run.
+        return await self.download_file(url, target_file, force=False)
 
     async def download_item(
         self,
@@ -336,18 +339,19 @@ class Downloader:
                     events = await self.download_item(item, target_folder)
 
                     failed_events = [e for e in events if e.status == DownloadStatus.FAILED]
-                    if failed_events:
-                        item_status = DownloadStatus.FAILED
-                        stats["failed"] += 1
-                        first_err = failed_events[0].error_message
-                    elif any(e.status == DownloadStatus.DOWNLOADED for e in events):
-                        item_status = DownloadStatus.DOWNLOADED
-                        stats["downloaded"] += 1
-                        first_err = None
-                    else:
-                        item_status = DownloadStatus.CACHED
-                        stats["cached"] += 1
-                        first_err = None
+                    async with self._stats_lock:
+                        if failed_events:
+                            item_status = DownloadStatus.FAILED
+                            stats["failed"] += 1
+                            first_err = failed_events[0].error_message
+                        elif any(e.status == DownloadStatus.DOWNLOADED for e in events):
+                            item_status = DownloadStatus.DOWNLOADED
+                            stats["downloaded"] += 1
+                            first_err = None
+                        else:
+                            item_status = DownloadStatus.CACHED
+                            stats["cached"] += 1
+                            first_err = None
 
                     if on_progress:
                         on_progress(
@@ -360,7 +364,8 @@ class Downloader:
                             )
                         )
                 except Exception as e:
-                    stats["failed"] += 1
+                    async with self._stats_lock:
+                        stats["failed"] += 1
                     logger.debug("Worker exception while downloading item %s: %s", item.id, e)
                     if on_progress:
                         on_progress(
