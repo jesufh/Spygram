@@ -687,20 +687,6 @@ class InstagramClient:
             except Exception as e:
                 logger.debug("HD avatar user info lookup failed for user_id '%s': %s", user_id, e)
 
-        if clean_user:
-            try:
-                web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={clean_user}"
-                data = await self._request("GET", web_url)
-                web_user = (data.get("data") or {}).get("user", {})
-                if isinstance(web_user, dict):
-                    pic = extract_hd_profile_pic_url(web_user, allow_standard_fallback=False)
-                    if pic:
-                        return pic
-            except (CheckpointError, ActionBlockedError, RateLimitError):
-                raise
-            except Exception as e:
-                logger.debug("HD avatar web profile lookup failed for '%s': %s", clean_user, e)
-
         feed_endpoints = []
         if user_id:
             feed_endpoints.append(f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=1")
@@ -728,6 +714,8 @@ class InstagramClient:
             except Exception as e:
                 logger.debug("HD avatar feed extraction failed for URL '%s': %s", feed_url, e)
 
+        # fallback: if none of the previous endpoints work, we resort to retrieving the profile photo in 320x320.
+        # currently, it is not possible to obtain the profile photo hd for anonymous users via conventional methods.
         if clean_user:
             try:
                 profile = await self.get_profile(clean_user)
