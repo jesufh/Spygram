@@ -17,13 +17,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from spygram.config import get_default_config_dir
+from spygram.config import get_default_config_dir, validate_username
 from spygram.exceptions import InvalidSessionError
 
 logger = logging.getLogger("spygram.auth")
 
 REQUIRED_COOKIES = ("sessionid",)
+"""Mandatory cookie keys required for an authenticated session."""
+
 SUPPORTED_BROWSERS = ("chrome", "edge", "firefox", "brave", "opera", "chromium", "vivaldi", "safari")
+"""Supported web browser identifiers for cookie extraction."""
 
 
 def get_sessions_dir(base_config_dir: Path | None = None) -> Path:
@@ -52,7 +55,7 @@ def get_session_file_path(username: str, sessions_dir: Path | None = None) -> Pa
     :return: Path to the JSON session file.
     :rtype: Path
     """
-    clean_username = username.lower().strip("@")
+    clean_username = validate_username(username)
     target_dir = sessions_dir or get_sessions_dir()
     return target_dir / f"{clean_username}_session.json"
 

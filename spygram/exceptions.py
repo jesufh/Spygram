@@ -2,7 +2,7 @@
 spygram.exceptions
 ~~~~~~~~~~~~~~~~~~
 
-Granular, modern exception hierarchy for Spygram (2026 standards).
+Granular, modern exception hierarchy for Spygram.
 
 Provides structured domain error handling across network transport, HTTP protocol,
 Instagram-specific security challenges (checkpoints, action blocks), data extraction,
@@ -41,11 +41,6 @@ class SpygramError(Exception):
         return f"{self.__class__.__name__}({self.message!r}, context={self.context!r})"
 
 
-# ==============================================================================
-# Network & Transport Exceptions
-# ==============================================================================
-
-
 class NetworkError(SpygramError):
     """
     Base exception for physical network, socket, DNS, SSL, and transport errors.
@@ -74,14 +69,11 @@ class ProxyError(NetworkError):
     pass
 
 
-# Backward compatibility alias
 ConnectionError = NetworkConnectionError
+"""Backward compatibility alias for :class:`NetworkConnectionError`."""
+
 TimeoutError = ConnectionTimeoutError
-
-
-# ==============================================================================
-# HTTP Protocol & Status Exceptions
-# ==============================================================================
+"""Backward compatibility alias for :class:`ConnectionTimeoutError`."""
 
 
 class HTTPStatusError(SpygramError):
@@ -205,11 +197,6 @@ class NotFoundError(ClientError):
         super().__init__(message, status_code=status_code, url=url, context=context)
 
 
-# ==============================================================================
-# Authentication & Authorization Exceptions
-# ==============================================================================
-
-
 class AuthenticationError(ClientError):
     """
     Base exception for authentication, session validity, and authorization failures.
@@ -288,13 +275,8 @@ class PermissionDeniedError(ClientError):
         super().__init__(message, status_code=status_code, url=url, context=context)
 
 
-# Backward compatibility aliases
 FeedbackRequiredError = ActionBlockedError
-
-
-# ==============================================================================
-# Extraction, Parsing & GraphQL Exceptions
-# ==============================================================================
+"""Backward compatibility alias for :class:`ActionBlockedError`."""
 
 
 class ScrapingError(SpygramError):
@@ -347,11 +329,6 @@ class TokenExtractionError(ScrapingError):
     pass
 
 
-# ==============================================================================
-# Download & Storage Exceptions
-# ==============================================================================
-
-
 class DownloadError(SpygramError):
     """
     Base exception for media file streaming, writing, and storage failures.
@@ -373,11 +350,6 @@ class IncompleteReadError(DownloadError):
     pass
 
 
-# ==============================================================================
-# Cache Exceptions
-# ==============================================================================
-
-
 class CacheError(SpygramError):
     """
     Base exception for local SQLite cache database failures.
@@ -397,11 +369,6 @@ class CacheCorruptedError(CacheError):
     Raised when a cached database payload cannot be deserialized.
     """
     pass
-
-
-# ==============================================================================
-# Configuration Exceptions
-# ==============================================================================
 
 
 class ConfigurationError(SpygramError):

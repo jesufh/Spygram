@@ -19,9 +19,16 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 
 _SLUG_SANITIZE_RE = re.compile(r'[\\/:*?"<>|]')
+"""Regular expression matching characters prohibited in filenames."""
+
 _SLUG_SPACES_RE = re.compile(r"[\s_]+")
+"""Regular expression matching consecutive whitespace and underscores."""
+
 _HASHTAG_RE = re.compile(r"#([\w_]+)")
+"""Regular expression matching hashtag tokens in captions."""
+
 _MENTION_RE = re.compile(r"@([\w_.]+)")
+"""Regular expression matching user mentions in captions."""
 
 
 def slugify(text: str) -> str:
@@ -416,6 +423,18 @@ class MediaItem:
 
     @staticmethod
     def _extract_best_resource(data: dict[str, Any], is_video: bool, suffix: str = "") -> MediaResource | None:
+        """
+        Extract highest quality image or video resource descriptor from raw node data.
+
+        :param data: Resource JSON mapping.
+        :type data: dict[str, Any]
+        :param is_video: Whether the target resource is a video.
+        :type is_video: bool
+        :param suffix: Optional filename suffix for multi-resource album children.
+        :type suffix: str
+        :return: Extracted MediaResource instance, or None if unavailable.
+        :rtype: MediaResource | None
+        """
         if is_video:
             versions = data.get("video_versions") or []
             if versions and isinstance(versions, list) and isinstance(versions[0], dict):
@@ -447,6 +466,16 @@ class MediaItem:
 
     @staticmethod
     def _parse_mentions(caption: str, data: dict[str, Any]) -> list[str]:
+        """
+        Extract mentioned and tagged user handles from captions and media metadata.
+
+        :param caption: Caption text string.
+        :type caption: str
+        :param data: Raw JSON media dictionary.
+        :type data: dict[str, Any]
+        :return: Deduplicated list of mentioned usernames.
+        :rtype: list[str]
+        """
         mentions = set(_MENTION_RE.findall(caption))
 
         tags = (data.get("usertags") or {}).get("in", [])
@@ -468,6 +497,14 @@ class MediaItem:
 
     @staticmethod
     def _parse_location(data: dict[str, Any]) -> LocationInfo | None:
+        """
+        Parse location identifier and place name from media metadata.
+
+        :param data: Raw JSON media dictionary.
+        :type data: dict[str, Any]
+        :return: LocationInfo instance, or None if location is absent.
+        :rtype: LocationInfo | None
+        """
         loc = data.get("location")
         if isinstance(loc, dict) and loc.get("name"):
             return LocationInfo(id=str(loc.get("pk") or loc.get("id", "")), name=str(loc["name"]))
@@ -482,6 +519,14 @@ class MediaItem:
 
     @staticmethod
     def _parse_music(data: dict[str, Any]) -> MusicInfo | None:
+        """
+        Parse track title and artist from clips or audio metadata envelopes.
+
+        :param data: Raw JSON media dictionary.
+        :type data: dict[str, Any]
+        :return: MusicInfo instance, or None if music metadata is absent.
+        :rtype: MusicInfo | None
+        """
         music_meta = data.get("music_metadata") or {}
         asset_info = (music_meta.get("music_info") or {}).get("music_asset_info")
         if isinstance(asset_info, dict) and asset_info.get("title"):

@@ -33,7 +33,7 @@ from spygram.auth import (
 )
 from spygram.cache import Cache
 from spygram.client import InstagramClient
-from spygram.config import AppConfig, get_default_downloads_dir
+from spygram.config import AppConfig, get_default_downloads_dir, validate_username
 from spygram.downloader import DownloadEvent, Downloader
 from spygram.exceptions import (
     ActionBlockedError,
@@ -58,7 +58,10 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
 
 console = Console(force_terminal=True)
+"""Rich console instance for colored CLI output."""
+
 logger = logging.getLogger("spygram.cli")
+"""Module logger for CLI operations."""
 
 BANNER = rf"""[grey70]
  ___ ___ _ _ ___ ___ ___ _____ 
@@ -66,6 +69,7 @@ BANNER = rf"""[grey70]
 |___|  _|_  |_  |_| |__,|_|_|_|
     |_| |___|___| version {__version__}  
 [/grey70]"""
+"""ASCII art logo banner displayed at application startup."""
 
 
 class RetroBarColumn(ProgressColumn):
@@ -187,8 +191,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-concurrent", "-c", type=int, default=3, help="maximum concurrent file downloads")
     parser.add_argument("--version", "-v", action="version", version=f"spygram {__version__}")
     parser.add_argument("--clear-cache", action="store_true", help="clear local cache database")
-
-    # Observability & Debugging flags
     parser.add_argument("--verbose", action="store_true", help="enable informational logging output")
     parser.add_argument("--debug", "-d", action="store_true", help="enable detailed debug traces and exception stack traces")
     parser.add_argument("--log-file", type=Path, default=None, help="write structured debug logs to specified file")
@@ -314,8 +316,6 @@ async def run() -> None:
     Main asynchronous CLI application runner.
     """
     args = parse_args()
-
-    # Configure logging based on user verbosity flags
     if args.debug:
         log_level = logging.DEBUG
     elif args.verbose:
@@ -335,7 +335,12 @@ async def run() -> None:
     since_dt: datetime | None = None
     if args.since:
         try:
-            since_dt = datetime.fromisoformat(args.since).replace(tzinfo=timezone.utc)
+            since_dt = datetime.fromisoformat(args.since)
+
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            else:
+                since_dt = since_dt.astimezone(timezone.utc)
         except ValueError:
             console.print(f"error: invalid date format '{args.since}', expected YYYY-MM-DD", style="grey70")
             return
@@ -347,7 +352,12 @@ async def run() -> None:
         console.print("cache cleared successfully.\n", style="grey50")
 
     cookies: dict[str, str] | None = None
-    target = args.user.lstrip("@")
+    try:
+        target = validate_username(args.user)
+    except ValueError as e:
+        console.print(f"error: {e}", style="grey70")
+        cache.close()
+        return
 
     if args.session is not None:
         if args.session == "":

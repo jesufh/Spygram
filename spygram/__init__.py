@@ -67,10 +67,10 @@ from spygram.models import (
     Profile,
 )
 
-# Standard Python library practice: prevent "No handler found" warnings
 _logging.getLogger("spygram").addHandler(_logging.NullHandler())
 
 __version__ = "2.0.0"
+"""Package release version string."""
 
 __all__ = [
     "InstagramClient",
@@ -88,7 +88,6 @@ __all__ = [
     "HighlightGroup",
     "MusicInfo",
     "LocationInfo",
-    # Exceptions
     "SpygramError",
     "NetworkError",
     "NetworkConnectionError",
@@ -121,7 +120,6 @@ __all__ = [
     "DatabaseLockError",
     "CacheCorruptedError",
     "ConfigurationError",
-    # Logging
     "setup_logging",
     "sanitize_text",
     "mask_secret",

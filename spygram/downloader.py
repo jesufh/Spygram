@@ -186,10 +186,16 @@ class Downloader:
                         try:
                             candidate_size = candidate.stat().st_size
                             if candidate_size > 0:
+                                if candidate.resolve() != dest_path.resolve():
+                                    candidate.replace(dest_path)
+                                    file_size = dest_path.stat().st_size
+                                else:
+                                    file_size = candidate_size
+
                                 if self.cache:
-                                    await self.cache.register_media(cache_id, str(candidate), candidate_size)
-                                logger.debug("Matched existing candidate pattern '%s' for '%s'", pattern, candidate.name)
-                                return DownloadStatus.CACHED, candidate_size, None
+                                    await self.cache.register_media(cache_id, str(dest_path), file_size)
+                                logger.debug("Matched existing candidate pattern '%s' for '%s'", pattern, dest_path.name)
+                                return DownloadStatus.CACHED, file_size, None
                         except OSError:
                             continue
 

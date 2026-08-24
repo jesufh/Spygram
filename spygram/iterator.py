@@ -111,7 +111,7 @@ class AsyncNodeIterator(Generic[T]):
                     item_dt = getattr(item, "taken_at")
                     if isinstance(item_dt, datetime) and item_dt < self._since:
                         logger.debug("Item date %s is older than cutoff %s. Stopping pagination.", item_dt, self._since)
-                        self._exhausted = True
+                        self._has_more = False
                         break
                 self._buffer.append(item)
 

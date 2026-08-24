@@ -13,10 +13,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 import platformdirs
 
 APP_NAME = "spygram"
+"""Application identifier name."""
+
 APP_AUTHOR = "spygram"
+"""Application vendor/author identifier."""
+
+INSTAGRAM_USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+"""Regular expression pattern for valid Instagram account handles."""
+
+
+def validate_username(username: str) -> str:
+    """
+    Validate and normalize an Instagram username handle to prevent path traversal.
+
+    :param username: Target Instagram username.
+    :type username: str
+    :return: Normalized lowercase username.
+    :rtype: str
+    :raises ValueError: If username format is invalid or contains path separators.
+    """
+    clean = username.lower().strip("@").strip()
+    if not INSTAGRAM_USERNAME_RE.match(clean):
+        raise ValueError(f"invalid Instagram username format: {username!r}")
+    return clean
 
 
 def get_default_config_dir() -> Path:
@@ -115,7 +138,8 @@ class AppConfig:
         :return: Directory path for the specific user.
         :rtype: Path
         """
-        target_dir = self.downloads_dir / username.lower().strip("@")
+        clean_user = validate_username(username)
+        target_dir = self.downloads_dir / clean_user
         target_dir.mkdir(parents=True, exist_ok=True)
         return target_dir
 

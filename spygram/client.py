@@ -53,9 +53,16 @@ from spygram.models import (
 logger = logging.getLogger("spygram.client")
 
 DEFAULT_APP_ID = "936619743392459"
+"""Default Instagram Web App ID header value."""
+
 DEFAULT_ASBD_ID = "129477"
+"""Default Instagram ASBD security header identifier."""
+
 DOC_ID_POLARIS_CLIPS = "27838951732404191"
+"""GraphQL persisted query document ID for Polaris clips connection."""
+
 DOC_ID_POLARIS_MEDIA = "28166906066331987"
+"""GraphQL persisted query document ID for Polaris logged-out media details."""
 
 
 class RateLimiter:
@@ -117,6 +124,9 @@ class InstagramClient:
         max_retries: int = 3,
         timeout: float = 30.0,
     ) -> None:
+        if max_retries < 1:
+            raise ValueError("max_retries must be at least 1")
+
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self.cache = cache
         self.max_retries = max_retries
@@ -179,6 +189,14 @@ class InstagramClient:
         await self.session.close()
 
     def _parse_html_tokens(self, html: str) -> dict[str, Any]:
+        """
+        Extract security tokens (LSD, CSRF, App ID, WWW-Claim) embedded in Instagram HTML.
+
+        :param html: Raw HTML response string.
+        :type html: str
+        :return: Extracted token key-value mapping.
+        :rtype: dict[str, Any]
+        """
         extracted: dict[str, Any] = {}
 
         if m := re.search(r'\["LSD",\s*\[\],\s*\{"token":\s*"([^"]+)"\}', html):
@@ -201,6 +219,14 @@ class InstagramClient:
         return extracted
 
     async def _bootstrap_session(self, target_url: str = "https://www.instagram.com/") -> dict[str, Any]:
+        """
+        Initialize session headers and acquire fresh anti-scraping tokens from Instagram.
+
+        :param target_url: Bootstrap entrypoint URL.
+        :type target_url: str
+        :return: Extracted token dictionary.
+        :rtype: dict[str, Any]
+        """
         async with self._bootstrap_lock:
             if self._bootstrapped:
                 return {}
@@ -229,6 +255,12 @@ class InstagramClient:
                 return {}
 
     def _update_headers_from_response(self, res: Response) -> None:
+        """
+        Update dynamic claim and CSRF request headers from HTTP response headers and cookies.
+
+        :param res: HTTP response object.
+        :type res: Response
+        """
         claim = res.headers.get("x-ig-set-www-claim") or res.headers.get("X-IG-Set-WWW-Claim")
         if claim:
             self.session.headers["X-IG-WWW-Claim"] = claim
@@ -238,10 +270,22 @@ class InstagramClient:
             self.session.headers["X-CSRFToken"] = csrf
 
     def _check_json_errors(self, res_json: dict[str, Any], url: str | None = None) -> None:
+        """
+        Inspect parsed JSON responses for GraphQL error envelopes and security checkpoints.
+
+        :param res_json: Parsed response JSON dictionary.
+        :type res_json: dict[str, Any]
+        :param url: Request URL for diagnostic context.
+        :type url: str | None
+        :raises GraphQLQueryError: If the response contains GraphQL error items.
+        :raises CheckpointError: If Instagram triggers a security challenge.
+        :raises ActionBlockedError: If feedback is required due to rate or action blocks.
+        :raises LoginRequiredError: If authentication is required.
+        :raises BadRequestError: If status is reported as fail.
+        """
         if not isinstance(res_json, dict):
             return
 
-        # 1. GraphQL Error envelope inspection
         if "errors" in res_json and isinstance(res_json["errors"], list) and res_json["errors"]:
             errors = res_json["errors"]
             first_msg = (
@@ -252,7 +296,6 @@ class InstagramClient:
             logger.debug("GraphQL error detected: %s (query url: %s)", first_msg, url)
             raise GraphQLQueryError(f"Instagram GraphQL query error: {first_msg}", errors=errors, context={"url": url})
 
-        # 2. Instagram API Security & Challenge Inspection
         msg = str(res_json.get("message", ""))
         chk_url = str(res_json.get("checkpoint_url", ""))
         status = str(res_json.get("status", ""))
@@ -279,6 +322,25 @@ class InstagramClient:
             raise BadRequestError(f"API returned failure: '{msg or 'Unknown error'}'", context={"url": url})
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        """
+        Execute an HTTP request with exponential backoff, rate limiting, and redirect management.
+
+        :param method: HTTP method ('GET', 'POST', etc.).
+        :type method: str
+        :param url: Target request URL.
+        :type url: str
+        :param kwargs: Additional arguments passed to the underlying session.
+        :return: JSON response payload.
+        :rtype: dict[str, Any]
+        :raises LoginRequiredError: If redirected to login wall or unauthenticated.
+        :raises NotFoundError: If resource does not exist (HTTP 404).
+        :raises RateLimitError: If rate limit quota is exhausted (HTTP 429).
+        :raises PermissionDeniedError: If access is forbidden (HTTP 401/403).
+        :raises ServerError: If Instagram returns a 5xx error after retries.
+        :raises BadRequestError: If a client error 4xx occurs.
+        :raises ConnectionTimeoutError: If the request times out after retries.
+        :raises NetworkConnectionError: If transport failures persist after retries.
+        """
         if not self._bootstrapped:
             await self._bootstrap_session()
 
@@ -292,27 +354,46 @@ class InstagramClient:
             attempts += 1
             await self.rate_limiter.wait_if_needed()
 
+            current_method = method
+            current_url = url
+            current_kwargs = dict(kwargs)
+            redirects_left = 5
+
             try:
-                logger.debug("HTTP %s %s (attempt %d/%d)", method, clean_log_url, attempts, self.max_retries)
-                res = await self.session.request(method, url, **kwargs)
-                self._update_headers_from_response(res)
+                while True:
+                    clean_log_url = sanitize_text(current_url)
+                    logger.debug("HTTP %s %s (attempt %d/%d)", current_method, clean_log_url, attempts, self.max_retries)
+                    res = await self.session.request(current_method, current_url, **current_kwargs)
+                    self._update_headers_from_response(res)
 
-                # Handle HTTP redirects (login walls)
-                if res.status_code in (301, 302, 303, 307, 308):
-                    loc = res.headers.get("location", "")
-                    if "accounts/login" in loc or "login" in loc:
-                        logger.warning("Redirected to Instagram login wall (%s)", loc)
-                        raise LoginRequiredError("Session expired or authentication required", url=url)
-                    if loc.startswith("https://"):
-                        logger.debug("Following redirect: %s -> %s", clean_log_url, loc)
-                        return await self._request(method, loc, **kwargs)
+                    if res.status_code in (301, 302, 303, 307, 308):
+                        loc = res.headers.get("location", "")
+                        if "accounts/login" in loc or "login" in loc:
+                            logger.warning("Redirected to Instagram login wall (%s)", loc)
+                            raise LoginRequiredError("Session expired or authentication required", url=current_url)
 
-                # Handle HTTP 404 Not Found
+                        if loc:
+                            if redirects_left <= 0:
+                                raise NetworkConnectionError(f"Too many redirects for {current_url}")
+                            redirects_left -= 1
+
+                            if loc.startswith("/"):
+                                loc = f"https://www.instagram.com{loc}"
+
+                            logger.debug("Following redirect: %s -> %s", clean_log_url, loc)
+                            current_url = loc
+                            if res.status_code in (301, 302, 303) and current_method.upper() == "POST":
+                                current_method = "GET"
+                                current_kwargs.pop("data", None)
+                                current_kwargs.pop("json", None)
+                            continue
+
+                    break
+
                 if res.status_code == 404:
                     logger.debug("Resource not found (HTTP 404) at %s", clean_log_url)
-                    raise NotFoundError(f"Resource not found at {clean_log_url}", url=url)
+                    raise NotFoundError(f"Resource not found at {clean_log_url}", url=current_url)
 
-                # Handle HTTP 429 Too Many Requests
                 if res.status_code == 429:
                     retry_header = res.headers.get("retry-after") or res.headers.get("Retry-After")
                     try:
@@ -329,40 +410,40 @@ class InstagramClient:
                     raise RateLimitError(
                         f"Rate limit exceeded (HTTP 429) at {clean_log_url}",
                         retry_after=retry_after,
-                        url=url,
+                        url=current_url,
                     )
 
-                # Handle HTTP 401 / 403 Forbidden
                 if res.status_code in (401, 403):
                     try:
                         data = res.json()
-                        self._check_json_errors(data, url=url)
-                    except (json.JSONDecodeError, CheckpointError, ActionBlockedError):
+                        self._check_json_errors(data, url=current_url)
+                    except (CheckpointError, ActionBlockedError, LoginRequiredError):
                         raise
+                    except Exception:
+                        pass
                     logger.warning("Permission denied (HTTP %d) at %s", res.status_code, clean_log_url)
-                    raise PermissionDeniedError(f"Permission denied (HTTP {res.status_code}) at {clean_log_url}", status_code=res.status_code, url=url)
+                    raise PermissionDeniedError(f"Permission denied (HTTP {res.status_code}) at {clean_log_url}", status_code=res.status_code, url=current_url)
 
-                # Handle HTTP 5xx Server Errors (Transient / Retriable)
                 if res.status_code >= 500:
                     if attempts < self.max_retries:
                         logger.warning("Server error HTTP %d at %s. Retrying in %.1fs (attempt %d/%d)...", res.status_code, clean_log_url, backoff, attempts, self.max_retries)
                         await asyncio.sleep(backoff)
                         backoff *= 2.0
                         continue
-                    raise ServerError(f"Server error HTTP {res.status_code} at {clean_log_url}", status_code=res.status_code, url=url)
+                    raise ServerError(f"Server error HTTP {res.status_code} at {clean_log_url}", status_code=res.status_code, url=current_url)
 
-                # Handle other HTTP 4xx Client Errors
                 if res.status_code >= 400:
                     try:
                         data = res.json()
-                        self._check_json_errors(data, url=url)
-                    except (json.JSONDecodeError, CheckpointError, ActionBlockedError, LoginRequiredError):
+                        self._check_json_errors(data, url=current_url)
+                    except (CheckpointError, ActionBlockedError, LoginRequiredError):
                         raise
-                    raise BadRequestError(f"Request failed with HTTP {res.status_code} at {clean_log_url}", status_code=res.status_code, url=url)
+                    except Exception:
+                        pass
+                    raise BadRequestError(f"Request failed with HTTP {res.status_code} at {clean_log_url}", status_code=res.status_code, url=current_url)
 
-                # Parse JSON and inspect domain payload
                 data = res.json()
-                self._check_json_errors(data, url=url)
+                self._check_json_errors(data, url=current_url)
                 return data
 
             except (
@@ -498,7 +579,6 @@ class InstagramClient:
                 logger.debug("Cache hit for profile '%s'", clean_user)
                 return Profile.from_api_dict(cached)
 
-        # 1. Try web profile endpoint
         url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={clean_user}"
         try:
             data = await self._request("GET", url)
@@ -509,10 +589,9 @@ class InstagramClient:
                 return Profile.from_api_dict(user_data)
         except (RateLimitError, CheckpointError, ActionBlockedError):
             raise
-        except (BadRequestError, NotFoundError) as e:
+        except (BadRequestError, NotFoundError, PermissionDeniedError, LoginRequiredError) as e:
             logger.debug("Web profile lookup for '%s' returned %s, trying mobile endpoint fallback...", clean_user, e)
 
-        # 2. Try mobile feed endpoint fallback
         mobile_url = f"https://www.instagram.com/api/v1/feed/user/{clean_user}/username/?count=1"
         try:
             data = await self._request("GET", mobile_url)
@@ -594,7 +673,6 @@ class InstagramClient:
         """
         clean_user = username.lower().strip("@") if username else ""
 
-        # 1. Try authenticated user info endpoint (contains 1080x1080 hd_profile_pic_url_info)
         if user_id:
             try:
                 info_url = f"https://www.instagram.com/api/v1/users/{user_id}/info/"
@@ -604,10 +682,11 @@ class InstagramClient:
                     pic = extract_hd_profile_pic_url(info_user, allow_standard_fallback=False)
                     if pic:
                         return pic
+            except (CheckpointError, ActionBlockedError, RateLimitError):
+                raise
             except Exception as e:
                 logger.debug("HD avatar user info lookup failed for user_id '%s': %s", user_id, e)
 
-        # 2. Try web profile endpoint (contains profile_pic_url_hd 320x320 - 1080x1080)
         if clean_user:
             try:
                 web_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={clean_user}"
@@ -617,10 +696,11 @@ class InstagramClient:
                     pic = extract_hd_profile_pic_url(web_user, allow_standard_fallback=False)
                     if pic:
                         return pic
+            except (CheckpointError, ActionBlockedError, RateLimitError):
+                raise
             except Exception as e:
                 logger.debug("HD avatar web profile lookup failed for '%s': %s", clean_user, e)
 
-        # 3. Try feed endpoints (post items contain hd_profile_pic_versions 640x640 - 1080x1080)
         feed_endpoints = []
         if user_id:
             feed_endpoints.append(f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=1")
@@ -630,7 +710,7 @@ class InstagramClient:
         for feed_url in feed_endpoints:
             try:
                 data = await self._request("GET", feed_url)
-                items = data.get("items", [])
+                items = data.get("items") or []
                 if items and isinstance(items[0], dict):
                     item_user = items[0].get("user") or items[0].get("owner")
                     if isinstance(item_user, dict):
@@ -643,15 +723,18 @@ class InstagramClient:
                     pic = extract_hd_profile_pic_url(feed_user, allow_standard_fallback=False)
                     if pic:
                         return pic
+            except (CheckpointError, ActionBlockedError, RateLimitError):
+                raise
             except Exception as e:
                 logger.debug("HD avatar feed extraction failed for URL '%s': %s", feed_url, e)
 
-        # 4. Fallback to basic profile picture (standard resolution)
         if clean_user:
             try:
                 profile = await self.get_profile(clean_user)
                 if profile.profile_pic_url:
                     return profile.profile_pic_url
+            except (CheckpointError, ActionBlockedError, RateLimitError):
+                raise
             except Exception as e:
                 logger.debug("HD avatar profile fallback failed for '%s': %s", clean_user, e)
 
@@ -681,11 +764,11 @@ class InstagramClient:
         async def _fetch_page(cursor: str | None) -> PageResult[MediaItem]:
             url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/?count=33" + (f"&max_id={cursor}" if cursor else "")
             data = await self._request("GET", url)
-            raw_items = data.get("items", [])
+            raw_items = data.get("items") or []
             filtered = [
                 MediaItem.from_api_dict(raw, content_type="posts")
                 for raw in raw_items
-                if raw.get("product_type") != "clips" and raw.get("media_type") != 2
+                if raw.get("product_type") != "clips"
             ]
             next_max_id = str(data.get("next_max_id", ""))
             has_more = bool(data.get("more_available", False)) and bool(next_max_id)
@@ -694,6 +777,14 @@ class InstagramClient:
         return AsyncNodeIterator(fetch_page=_fetch_page, limit=limit, since=since, state=state)
 
     async def _get_logged_out_media(self, media_id: str) -> dict[str, Any]:
+        """
+        Query detailed metadata for a single media item via Polaris logged-out GraphQL endpoint.
+
+        :param media_id: Numeric Instagram media identifier.
+        :type media_id: str
+        :return: Extracted media node dictionary.
+        :rtype: dict[str, Any]
+        """
         variables = {"media_id": str(media_id)}
         try:
             res = await self.graphql_api(DOC_ID_POLARIS_MEDIA, variables)
@@ -742,7 +833,7 @@ class InstagramClient:
                     .get("xig_user_by_username", {})
                     .get("polaris_clips_connection", {})
                 )
-                edges = clips_conn.get("edges", [])
+                edges = clips_conn.get("edges") or []
                 items: list[MediaItem] = []
                 for edge in edges:
                     node = edge.get("node") if isinstance(edge, dict) and "node" in edge else edge
@@ -753,7 +844,7 @@ class InstagramClient:
                     merged = {**node, **detail}
                     items.append(MediaItem.from_api_dict(merged, content_type="reels"))
 
-                page_info = clips_conn.get("page_info", {})
+                page_info = clips_conn.get("page_info") or {}
                 has_more = bool(page_info.get("has_next_page", False))
                 next_cursor = str(page_info.get("end_cursor", "")) if has_more else None
                 return PageResult(items=items, next_cursor=next_cursor, has_more=has_more and bool(next_cursor))
@@ -766,14 +857,14 @@ class InstagramClient:
                 form_data["max_id"] = cursor
 
             data = await self._request("POST", "https://www.instagram.com/api/v1/clips/user/", data=form_data)
-            items_raw = data.get("items", [])
+            items_raw = data.get("items") or []
             items: list[MediaItem] = []
             for entry in items_raw:
                 media = entry.get("media")
                 if isinstance(media, dict):
                     items.append(MediaItem.from_api_dict(media, content_type="reels"))
 
-            paging = data.get("paging_info", {})
+            paging = data.get("paging_info") or {}
             max_id = str(paging.get("max_id", ""))
             has_more = bool(paging.get("more_available", False)) and bool(max_id)
             return PageResult(items=items, next_cursor=max_id if has_more else None, has_more=has_more)
@@ -793,7 +884,9 @@ class InstagramClient:
 
         try:
             data = await self._request("GET", f"https://www.instagram.com/api/v1/feed/reels_media/?reel_ids={user_id}")
-            items = data.get("reels", {}).get(str(user_id), {}).get("items", [])
+            reels = data.get("reels") or {}
+            user_reel = reels.get(str(user_id)) or {}
+            items = user_reel.get("items") or []
         except (LoginRequiredError, CheckpointError, ActionBlockedError, RateLimitError):
             raise
         except Exception as e:
@@ -802,7 +895,8 @@ class InstagramClient:
         if not items:
             try:
                 data = await self._request("GET", f"https://www.instagram.com/api/v1/feed/user/{user_id}/story/")
-                items = data.get("reel", {}).get("items", [])
+                reel = data.get("reel") or {}
+                items = reel.get("items") or []
             except (LoginRequiredError, CheckpointError, ActionBlockedError, RateLimitError):
                 raise
             except Exception as e:
@@ -829,7 +923,7 @@ class InstagramClient:
             logger.debug("Highlights tray request failed for user %s: %s", user_id, e)
             return
 
-        tray = data.get("tray", [])
+        tray = data.get("tray") or []
         for hl in tray:
             if not isinstance(hl, dict):
                 continue
@@ -842,13 +936,13 @@ class InstagramClient:
                     "GET",
                     f"https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:{hid}",
                 )
-                reels_map = stories_data.get("reels", {})
+                reels_map = stories_data.get("reels") or {}
                 reel = (
                     reels_map.get(f"highlight:{hid}")
                     or reels_map.get(hid)
                     or (next(iter(reels_map.values())) if reels_map else {})
-                )
-                raw_items = reel.get("items", [])
+                ) or {}
+                raw_items = reel.get("items") or []
                 items = [MediaItem.from_api_dict(it, content_type="highlights") for it in raw_items]
                 yield HighlightGroup(id=hid, title=title, cover_url=cover_url, items=items)
             except (LoginRequiredError, CheckpointError, ActionBlockedError, RateLimitError):
@@ -881,7 +975,8 @@ class InstagramClient:
         async def _fetch_tagged_page(cursor: str | None) -> PageResult[MediaItem]:
             url = f"https://www.instagram.com/api/v1/usertags/{user_id}/feed/" + (f"?max_id={cursor}" if cursor else "")
             data = await self._request("GET", url)
-            items = [MediaItem.from_api_dict(raw, content_type="tagged") for raw in data.get("items", [])]
+            raw_items = data.get("items") or []
+            items = [MediaItem.from_api_dict(raw, content_type="tagged") for raw in raw_items]
             next_max_id = str(data.get("next_max_id", ""))
             has_more = bool(data.get("more_available", False)) and bool(next_max_id)
             return PageResult(items=items, next_cursor=next_max_id if has_more else None, has_more=has_more)

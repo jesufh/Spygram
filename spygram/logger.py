@@ -15,7 +15,6 @@ from pathlib import Path
 import re
 from typing import Any
 
-# Sensitive keys and parameter names to redact
 SENSITIVE_FIELD_PATTERNS = (
     re.compile(r"(sessionid=)([^;&\s]+)", re.IGNORECASE),
     re.compile(r"(ds_user_id=)([^;&\s]+)", re.IGNORECASE),
@@ -27,8 +26,9 @@ SENSITIVE_FIELD_PATTERNS = (
     re.compile(r'(X-FB-LSD:\s*)([^\s]+)', re.IGNORECASE),
     re.compile(r'(X-CSRFToken:\s*)([^\s]+)', re.IGNORECASE),
     re.compile(r'(X-IG-WWW-Claim:\s*)([^\s]+)', re.IGNORECASE),
-    re.compile(r"(://[^:]+:)([^@]+)(@)", re.IGNORECASE),  # Proxy password redaction
+    re.compile(r"(://[^:]+:)([^@]+)(@)", re.IGNORECASE),
 )
+"""Compiled regular expressions matching credentials, tokens, and secrets in text strings."""
 
 SENSITIVE_KEY_NAMES = {
     "sessionid",
@@ -43,6 +43,7 @@ SENSITIVE_KEY_NAMES = {
     "secret",
     "token",
 }
+"""Set of sensitive dictionary keys whose values must be masked or scrubbed."""
 
 
 def mask_secret(value: str, visible_prefix: int = 4, visible_suffix: int = 4) -> str:
@@ -103,7 +104,12 @@ def sanitize_dict(data: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(v, dict):
             cleaned[k] = sanitize_dict(v)
         elif isinstance(v, list):
-            cleaned[k] = [sanitize_dict(item) if isinstance(item, dict) else item for item in v]
+            cleaned[k] = [
+                sanitize_dict(item) if isinstance(item, dict)
+                else sanitize_text(item) if isinstance(item, str)
+                else item
+                for item in v
+            ]
         elif isinstance(v, str):
             cleaned[k] = sanitize_text(v)
         else:
@@ -122,13 +128,15 @@ class SensitiveDataFilter(logging.Filter):
         if record.args:
             if isinstance(record.args, dict):
                 record.args = sanitize_dict(record.args)
-            elif isinstance(record.args, tuple):
+            elif isinstance(record.args, (tuple, list)):
                 record.args = tuple(
                     sanitize_dict(a) if isinstance(a, dict)
                     else sanitize_text(a) if isinstance(a, str)
                     else a
                     for a in record.args
                 )
+            elif isinstance(record.args, str):
+                record.args = (sanitize_text(record.args),)
         return True
 
 
@@ -157,8 +165,6 @@ def setup_logging(
     root_logger.handlers.clear()
 
     sensitive_filter = SensitiveDataFilter()
-
-    # 1. Console Handler
     if use_rich:
         try:
             from rich.logging import RichHandler
@@ -184,7 +190,6 @@ def setup_logging(
     console_handler.addFilter(sensitive_filter)
     root_logger.addHandler(console_handler)
 
-    # 2. File Handler (Optional)
     if log_file:
         file_path = Path(log_file)
         file_path.parent.mkdir(parents=True, exist_ok=True)
