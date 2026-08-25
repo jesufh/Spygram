@@ -421,6 +421,16 @@ async def run() -> None:
                 if not client.is_authenticated:
                     console.print(f"error: target account '{target}' is private. authentication required.", style="grey70")
                     return
+
+                try:
+                    friendship = await client.get_friendship_status(user_id)
+                    if not friendship.get("following", False):
+                        console.print(f"error: target account '{target}' is private. you must be following this account to scrape it.", style="grey70")
+                        return
+                except Exception as e:
+                    logger.debug("friendship status check failed for user '%s': %s", target, e)
+                    console.print(f"error: could not verify access to private account '{target}'. make sure you are following it.", style="grey70")
+                    return
         except NotFoundError:
             console.print(f"error: target user '{target}' not found.", style="grey70")
             return

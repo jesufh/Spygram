@@ -728,6 +728,26 @@ class InstagramClient:
 
         return ""
 
+    async def get_friendship_status(self, user_id: str) -> dict[str, Any]:
+        """
+        Retrieves the friendship status between the authenticated session and the target user.
+
+        :param user_id: Numeric ID of the target user.
+        :type user_id: str
+        :return: Dictionary containing the friendship status, including the 'following' key.
+        :rtype: dict[str, Any]
+        :raises LoginRequiredError: If there is no authenticated session.
+        :raises SpygramError: In the event of network or API errors.
+        """
+        if not self.is_authenticated:
+            raise LoginRequiredError("authentication required to check friendship status")
+
+        url = f"https://www.instagram.com/api/v1/friendships/show/{user_id}/"
+        logger.debug("requesting friendship status for user_id '%s'", user_id)
+        data = await self._request("GET", url)
+        
+        return data
+
     def iter_posts(
         self,
         user_id: str,
